@@ -6,7 +6,7 @@ authors = ["Raskell <hello@raskell.io>"]
 description = "Mock server agent for Sentinel proxy - request stubbing, response templates, and failure simulation"
 license = "Apache-2.0"
 repository = "https://github.com/raskell-io/sentinel-agent-mock-server"
-keywords = ["sentinel", "proxy", "agent", "mock", "testing", "stub"]
+keywords = ["sentinel", "proxy", "agent", "mock", "testing"]
 categories = ["network-programming", "development-tools::testing"]
 readme = "README.md"
 
