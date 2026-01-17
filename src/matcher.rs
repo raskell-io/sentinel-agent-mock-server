@@ -99,9 +99,9 @@ impl PathTemplate {
                 }
                 TemplateSegment::Param(name) => {
                     // Find the next literal or end of string
-                    let end_pos = if let Some(next_segment) = self.segments.iter().skip_while(|s| {
-                        !matches!(s, TemplateSegment::Literal(_))
-                    }).next() {
+                    let end_pos = if let Some(next_segment) = self.segments.iter().find(|s| {
+                        matches!(s, TemplateSegment::Literal(_))
+                    }) {
                         if let TemplateSegment::Literal(next_lit) = next_segment {
                             remaining.find(next_lit.as_str()).unwrap_or(remaining.len())
                         } else {
@@ -193,6 +193,7 @@ impl Matcher {
         None
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn matches_request(
         &self,
         stub_idx: usize,

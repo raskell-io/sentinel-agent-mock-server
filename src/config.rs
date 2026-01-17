@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 /// Main configuration for the Mock Server agent.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct MockServerConfig {
     /// List of stub definitions
@@ -23,15 +23,6 @@ pub struct MockServerConfig {
     pub default_response: Option<ResponseDefinition>,
 }
 
-impl Default for MockServerConfig {
-    fn default() -> Self {
-        Self {
-            stubs: Vec::new(),
-            settings: GlobalSettings::default(),
-            default_response: None,
-        }
-    }
-}
 
 impl MockServerConfig {
     /// Load configuration from a YAML file.
@@ -550,7 +541,7 @@ stubs:
             max_ms: 150,
         };
         let delay = range.calculate();
-        assert!(delay >= 50 && delay <= 150);
+        assert!((50..=150).contains(&delay));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 [package]
 name = "sentinel-agent-mock-server"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["Raskell <hello@raskell.io>"]
 description = "Mock server agent for Sentinel proxy - request stubbing, response templates, and failure simulation"
@@ -11,8 +11,10 @@ categories = ["network-programming", "development-tools::testing"]
 readme = "README.md"
 
 [dependencies]
-# Sentinel SDK
-sentinel-agent-sdk = "0.1"
+# Using local path for development until 0.2 is published to crates.io
+sentinel-agent-sdk = { path = "../sentinel-agent-rust-sdk", features = ["v2"] }
+# Direct access to protocol types for metrics
+sentinel-agent-protocol = "0.3"
 
 # Async runtime
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync", "time", "fs"] }

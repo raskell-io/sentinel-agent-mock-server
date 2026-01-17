@@ -4,9 +4,12 @@ use crate::config::{FaultConfig, MockServerConfig, ResponseBody, StubDefinition}
 use crate::matcher::Matcher;
 use crate::template::TemplateEngine;
 use async_trait::async_trait;
-use sentinel_agent_sdk::{Agent, Decision, Request, Response};
+use sentinel_agent_sdk::prelude::*;
+use sentinel_agent_sdk::v2::prelude::*;
+use sentinel_agent_sdk::v2::{DrainReason, MetricsReport, ShutdownReason};
+use sentinel_agent_protocol::v2::{CounterMetric, GaugeMetric};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
@@ -21,6 +24,14 @@ pub struct MockServerAgent {
     template_engine: TemplateEngine,
     /// Match counts per stub ID
     match_counts: Arc<RwLock<HashMap<String, AtomicU32>>>,
+    /// Total requests processed.
+    requests_total: AtomicU64,
+    /// Total requests matched to stubs.
+    requests_matched: AtomicU64,
+    /// Total requests unmatched.
+    requests_unmatched: AtomicU64,
+    /// Whether the agent is draining (not accepting new mock responses).
+    draining: AtomicBool,
 }
 
 /// Flatten SDK headers (Vec<String>) to single-value HashMap
@@ -54,7 +65,31 @@ impl MockServerAgent {
             matcher,
             template_engine,
             match_counts: Arc::new(RwLock::new(match_counts)),
+            requests_total: AtomicU64::new(0),
+            requests_matched: AtomicU64::new(0),
+            requests_unmatched: AtomicU64::new(0),
+            draining: AtomicBool::new(false),
         }
+    }
+
+    /// Check if the agent is draining.
+    pub fn is_draining(&self) -> bool {
+        self.draining.load(Ordering::Relaxed)
+    }
+
+    /// Get total requests processed.
+    pub fn total_requests(&self) -> u64 {
+        self.requests_total.load(Ordering::Relaxed)
+    }
+
+    /// Get total requests matched.
+    pub fn total_matched(&self) -> u64 {
+        self.requests_matched.load(Ordering::Relaxed)
+    }
+
+    /// Get total requests unmatched.
+    pub fn total_unmatched(&self) -> u64 {
+        self.requests_unmatched.load(Ordering::Relaxed)
     }
 
     /// Create from a YAML configuration string.
@@ -366,7 +401,20 @@ unsafe impl Sync for MockServerAgent {}
 
 #[async_trait]
 impl Agent for MockServerAgent {
+    fn name(&self) -> &str {
+        "mock-server"
+    }
+
     async fn on_request(&self, request: &Request) -> Decision {
+        // Increment request counter
+        self.requests_total.fetch_add(1, Ordering::Relaxed);
+
+        // Check if draining - don't mock, pass through
+        if self.is_draining() {
+            debug!("Agent is draining, passing through request");
+            return Decision::allow();
+        }
+
         let method = request.method();
         let path = request.path();
         let query_string = request.query_string();
@@ -387,6 +435,7 @@ impl Agent for MockServerAgent {
             Some(result) => {
                 // Check if stub is exhausted
                 if self.is_stub_exhausted(result.stub).await {
+                    self.requests_unmatched.fetch_add(1, Ordering::Relaxed);
                     if self.config.settings.log_unmatched {
                         info!(
                             stub_id = %result.stub.id,
@@ -401,7 +450,8 @@ impl Agent for MockServerAgent {
                     };
                 }
 
-                // Increment match count
+                // Increment counters
+                self.requests_matched.fetch_add(1, Ordering::Relaxed);
                 self.increment_match_count(&result.stub.id).await;
 
                 if self.config.settings.log_matches {
@@ -425,6 +475,7 @@ impl Agent for MockServerAgent {
                 .await
             }
             None => {
+                self.requests_unmatched.fetch_add(1, Ordering::Relaxed);
                 if self.config.settings.log_unmatched {
                     warn!(
                         method = %method,
@@ -445,6 +496,105 @@ impl Agent for MockServerAgent {
     async fn on_response(&self, _request: &Request, _response: &Response) -> Decision {
         // Response phase - nothing to do for mock server
         Decision::allow()
+    }
+
+    async fn on_configure(&self, config: serde_json::Value) -> Result<(), String> {
+        // v2 configuration update support
+        if config.is_null() {
+            return Ok(());
+        }
+
+        info!(config = %config, "Received configuration update");
+        // For now, we acknowledge the config - full hot-reload would require
+        // more complex state management
+        Ok(())
+    }
+}
+
+/// v2 Protocol implementation for MockServerAgent.
+impl AgentV2 for MockServerAgent {
+    fn capabilities(&self) -> AgentCapabilities {
+        AgentCapabilities::new("mock-server", "Mock Server Agent", env!("CARGO_PKG_VERSION"))
+            .with_config_push(true)
+            .with_health_reporting(true)
+            .with_metrics_export(true)
+            .with_concurrent_requests(100)
+            .with_cancellation(true)
+            .with_max_processing_time_ms(5000)
+    }
+
+    fn health_status(&self) -> HealthStatus {
+        // Report healthy unless we're draining
+        if self.is_draining() {
+            HealthStatus::degraded(
+                "mock-server",
+                vec!["stubbing".to_string()],
+                1.0,
+            )
+        } else {
+            HealthStatus::healthy("mock-server")
+        }
+    }
+
+    fn metrics_report(&self) -> Option<MetricsReport> {
+        let mut report = MetricsReport::new("mock-server", 10_000);
+
+        // Add counter metrics
+        report.counters.push(CounterMetric::new(
+            "mock_server_requests_total",
+            self.total_requests(),
+        ));
+
+        report.counters.push(CounterMetric::new(
+            "mock_server_requests_matched_total",
+            self.total_matched(),
+        ));
+
+        report.counters.push(CounterMetric::new(
+            "mock_server_requests_unmatched_total",
+            self.total_unmatched(),
+        ));
+
+        // Add gauge metrics
+        report.gauges.push(GaugeMetric::new(
+            "mock_server_stubs_configured",
+            self.config.stubs.len() as f64,
+        ));
+
+        report.gauges.push(GaugeMetric::new(
+            "mock_server_stubs_enabled",
+            self.config.stubs.iter().filter(|s| s.enabled).count() as f64,
+        ));
+
+        report.gauges.push(GaugeMetric::new(
+            "mock_server_agent_draining",
+            if self.is_draining() { 1.0 } else { 0.0 },
+        ));
+
+        Some(report)
+    }
+
+    fn on_shutdown(&self, reason: ShutdownReason, grace_period_ms: u64) {
+        info!(
+            reason = ?reason,
+            grace_period_ms = grace_period_ms,
+            "Mock server agent shutdown requested"
+        );
+        // Set draining flag to stop mocking new requests
+        self.draining.store(true, Ordering::SeqCst);
+    }
+
+    fn on_drain(&self, duration_ms: u64, reason: DrainReason) {
+        warn!(
+            reason = ?reason,
+            duration_ms = duration_ms,
+            "Mock server agent drain requested - stopping stub matching"
+        );
+        self.draining.store(true, Ordering::SeqCst);
+    }
+
+    fn on_stream_closed(&self) {
+        debug!("gRPC stream closed");
     }
 }
 
@@ -603,5 +753,86 @@ settings:
 
         // Third match - stub should be exhausted
         assert!(agent.is_stub_exhausted(&agent.config.stubs[0]).await);
+    }
+
+    #[test]
+    fn test_v2_capabilities() {
+        let config = test_config();
+        let agent = MockServerAgent::new(config);
+
+        let caps = agent.capabilities();
+        assert_eq!(caps.agent_id, "mock-server");
+        assert_eq!(caps.name, "Mock Server Agent");
+        assert!(caps.features.config_push);
+        assert!(caps.features.health_reporting);
+        assert!(caps.features.metrics_export);
+        assert_eq!(caps.features.concurrent_requests, 100);
+    }
+
+    #[test]
+    fn test_v2_health_status() {
+        let config = test_config();
+        let agent = MockServerAgent::new(config);
+
+        // Should be healthy initially
+        let health = agent.health_status();
+        assert!(health.is_healthy());
+        assert_eq!(health.agent_id, "mock-server");
+    }
+
+    #[test]
+    fn test_v2_health_status_draining() {
+        let config = test_config();
+        let agent = MockServerAgent::new(config);
+
+        // Trigger drain
+        agent.on_drain(5000, DrainReason::Maintenance);
+
+        // Should be degraded now
+        let health = agent.health_status();
+        assert!(!health.is_healthy());
+    }
+
+    #[test]
+    fn test_v2_metrics_report() {
+        let config = test_config();
+        let agent = MockServerAgent::new(config);
+
+        let report = agent.metrics_report();
+        assert!(report.is_some());
+
+        let report = report.unwrap();
+        assert_eq!(report.agent_id, "mock-server");
+        assert!(!report.counters.is_empty());
+        assert!(!report.gauges.is_empty());
+    }
+
+    #[test]
+    fn test_draining_flag() {
+        let config = test_config();
+        let agent = MockServerAgent::new(config);
+
+        assert!(!agent.is_draining());
+
+        agent.on_shutdown(ShutdownReason::Graceful, 30000);
+
+        assert!(agent.is_draining());
+    }
+
+    #[test]
+    fn test_request_counters() {
+        let config = test_config();
+        let agent = MockServerAgent::new(config);
+
+        assert_eq!(agent.total_requests(), 0);
+        assert_eq!(agent.total_matched(), 0);
+        assert_eq!(agent.total_unmatched(), 0);
+
+        // Simulate incrementing (in real usage this happens in on_request)
+        agent.requests_total.fetch_add(1, Ordering::Relaxed);
+        agent.requests_matched.fetch_add(1, Ordering::Relaxed);
+
+        assert_eq!(agent.total_requests(), 1);
+        assert_eq!(agent.total_matched(), 1);
     }
 }

@@ -3,7 +3,8 @@
 use anyhow::Result;
 use clap::Parser;
 use sentinel_agent_mock_server::{MockServerAgent, MockServerConfig};
-use sentinel_agent_sdk::AgentRunner;
+use sentinel_agent_sdk::v2::{AgentRunnerV2, TransportConfig};
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use tracing::{info, Level};
 use tracing_subscriber::FmtSubscriber;
@@ -22,6 +23,10 @@ struct Args {
     /// Unix socket path for agent communication
     #[arg(short, long, default_value = "/tmp/sentinel-mock-server.sock")]
     socket: PathBuf,
+
+    /// gRPC server address (e.g., "0.0.0.0:50051")
+    #[arg(long, value_name = "ADDR")]
+    grpc_address: Option<SocketAddr>,
 
     /// Log level (trace, debug, info, warn, error)
     #[arg(short = 'L', long, default_value = "info")]
@@ -75,17 +80,35 @@ async fn main() -> Result<()> {
     // Create agent
     let agent = MockServerAgent::new(config);
 
-    info!(
-        socket = ?args.socket,
-        "Starting mock server agent"
-    );
+    // Configure transport based on CLI options
+    let transport = match args.grpc_address {
+        Some(grpc_addr) => {
+            info!(
+                grpc_address = %grpc_addr,
+                socket = %args.socket.display(),
+                "Starting mock server agent with gRPC and UDS (v2 protocol)"
+            );
+            TransportConfig::Both {
+                grpc_address: grpc_addr,
+                uds_path: args.socket,
+            }
+        }
+        None => {
+            info!(socket = %args.socket.display(), "Starting mock server agent with UDS (v2 protocol)");
+            TransportConfig::Uds { path: args.socket }
+        }
+    };
 
-    // Run the agent
-    AgentRunner::new(agent)
-        .with_name("mock-server")
-        .with_socket(&args.socket)
-        .run()
-        .await?;
+    // Run agent with v2 runner
+    let mut runner = AgentRunnerV2::new(agent).with_name("mock-server");
+
+    runner = match transport {
+        TransportConfig::Grpc { address } => runner.with_grpc(address),
+        TransportConfig::Uds { path } => runner.with_uds(path),
+        TransportConfig::Both { grpc_address, uds_path } => runner.with_both(grpc_address, uds_path),
+    };
+
+    runner.run().await?;
 
     Ok(())
 }
