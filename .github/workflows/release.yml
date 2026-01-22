@@ -13,7 +13,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  BINARY_NAME: sentinel-mock-server-agent
+  BINARY_NAME: sentinel-agent-mock-server
 
 jobs:
   build:
