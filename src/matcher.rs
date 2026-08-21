@@ -172,7 +172,7 @@ impl Matcher {
     ) -> Option<MatchResult<'a>> {
         // Sort by priority (highest first)
         let mut indexed_stubs: Vec<_> = stubs.iter().enumerate().collect();
-        indexed_stubs.sort_by(|a, b| b.1.priority.cmp(&a.1.priority));
+        indexed_stubs.sort_by_key(|a| std::cmp::Reverse(a.1.priority));
 
         for (idx, stub) in indexed_stubs {
             if !stub.enabled {
