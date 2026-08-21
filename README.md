@@ -24,17 +24,36 @@ zentinel bundle install mock-server
 zentinel bundle install
 ```
 
-The bundle command downloads the correct binary for your platform and places it in the standard location. See the [bundle documentation](https://zentinelproxy.io/docs/deployment/bundle/) for details.
+The bundle command downloads the correct binary for your platform and places it in the standard location. See the [bundle documentation](https://docs.zentinelproxy.io/deployment/bundle/) for details.
 
 ### Using Cargo
 
+Not supported. `zentinel-agent-mock-server` is not published on crates.io, and it depends on
+`zentinel-agent-protocol` through a path dependency, so neither
+`cargo install zentinel-agent-mock-server` nor `cargo install --git` works. Use a prebuilt
+binary or build from source (below).
+
+### Prebuilt Binaries
+
+Each [release](https://github.com/zentinelproxy/zentinel-agent-mock-server/releases) ships binaries
+for `linux-x86_64`, `linux-aarch64`, and `darwin-aarch64`:
+
 ```bash
-cargo install zentinel-agent-mock-server
+VERSION=0.4.0
+PLATFORM=linux-x86_64   # or linux-aarch64, darwin-aarch64
+curl -fsSL -o zentinel-mock-server-agent.tar.gz \
+  "https://github.com/zentinelproxy/zentinel-agent-mock-server/releases/download/v${VERSION}/zentinel-mock-server-agent-${VERSION}-${PLATFORM}.tar.gz"
+tar -xzf zentinel-mock-server-agent.tar.gz
+sudo install -m 0755 zentinel-mock-server-agent /usr/local/bin/
 ```
 
 ### From Source
 
+Building from source requires the [zentinel](https://github.com/zentinelproxy/zentinel) repository checked out
+**next to** this one, because `zentinel-agent-protocol` is a path dependency:
+
 ```bash
+git clone https://github.com/zentinelproxy/zentinel
 git clone https://github.com/zentinelproxy/zentinel-agent-mock-server
 cd zentinel-agent-mock-server
 cargo build --release
